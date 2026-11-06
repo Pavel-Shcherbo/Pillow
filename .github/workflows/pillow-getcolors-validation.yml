@@ -1,0 +1,82 @@
+name: Focused getcolors validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      MAX_CONCURRENCY: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      PILLOW_BASE_SHA: "86a20c22e8a21545bf56e3c24372277a05d883a5"
+    steps:
+      - name: Checkout validation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libjpeg-dev zlib1g-dev
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pre-commit
+      - name: Build unchanged baseline native code
+        run: |
+          git show "${PILLOW_BASE_SHA}:src/libImaging/GetBBox.c" > src/libImaging/GetBBox.c
+          sha256sum src/libImaging/GetBBox.c
+          python3 -m pip install --no-cache-dir ".[tests]"
+      - name: Baseline selftest first
+        run: timeout --kill-after=10s 120s python3 selftest.py
+      - name: Bound baseline reproductions in child processes
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          import sys
+          for mode, limit in [("RGB", -1), ("I", -2)]:
+              code = (
+                  "from PIL import Image; "
+                  "im=Image.new('L',(5,1)); im.putdata(range(5)); "
+                  f"im=im.convert({mode!r}); print(im.getcolors({limit}))"
+              )
+              try:
+                  result = subprocess.run(
+                      [sys.executable, "-c", code],
+                      capture_output=True, text=True, timeout=2, check=False,
+                  )
+              except subprocess.TimeoutExpired:
+                  print(f"BASELINE_REPRODUCED mode={mode} maxcolors={limit}: killed after 2s")
+              else:
+                  raise AssertionError(
+                      f"Baseline did not reproduce: {mode}, {limit}, "
+                      f"exit={result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}"
+                  )
+          PY
+      - name: Rebuild actual patched native code
+        run: |
+          git checkout HEAD -- src/libImaging/GetBBox.c
+          sha256sum src/libImaging/GetBBox.c Tests/test_image_getcolors.py docs/releasenotes/13.1.0.rst
+          rm -rf build
+          python3 -m pip install --force-reinstall --no-deps --no-cache-dir .
+      - name: Patched selftest first
+        run: timeout --kill-after=10s 120s python3 selftest.py
+      - name: Focused native regression and adjacent checks
+        run: |
+          timeout --kill-after=10s 180s python3 -m pytest \
+            Tests/test_image_getcolors.py Tests/test_image_getbbox.py \
+            Tests/test_image_getextrema.py -q --junitxml=getcolors-results.xml
+      - name: Pinned upstream hooks for changed files
+        run: |
+          pre-commit run --files src/libImaging/GetBBox.c Tests/test_image_getcolors.py docs/releasenotes/13.1.0.rst
+          git diff --exit-code
