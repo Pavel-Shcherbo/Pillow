@@ -20,12 +20,15 @@ jobs:
       - name: Checkout validation branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 3
+          fetch-depth: 2
+          ref: 01b58f5388d6bd069b16b1fa62fa3dd98dec498f
           persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: "3.12"
+      - name: Record exact patch source
+        run: git log -1 --format=fuller
       - name: Install build dependencies
         run: |
           sudo apt-get update
